@@ -1,0 +1,82 @@
+---
+title: "Explore NY Data"
+author: "Matt Lehman (mhl84)"
+date: "March 26, 2018"
+output: 
+  html_document:
+    toc: true
+    theme: readable
+    highlight: haddock
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, echo = FALSE, message=FALSE}
+library(data.table)
+library(dplyr)
+```
+
+### Read and Clean Candidate Data
+```{r}
+# data from https://www.fec.gov/data/candidates/?office=H&state=NY&has_raised_funds=true
+# codebook for a similar dataset here: https://classic.fec.gov/finance/disclosure/metadata/DataDictionaryCandidateMaster.shtml
+candidates <- fread("candidates-2018-03-26T12_17_18.csv")
+
+# Let's get only candidates who ran in 2010, or 2014
+filter.years <- c("2010", "2014")
+
+# Remove the braces from the cycles field 
+candidates$election_years <-gsub("\\{|\\}", "",candidates$election_years)
+# Make a list. Each entry is a vector of the election years a canidate ran in
+elections.list <- strsplit(candidates$election_years, ",")
+
+# list apply to find if the cycles contain the years we want
+# and then sapply to sum the resulting vectors of T/F per candidate
+# End result is 1 if candidate ran in that year and 0 if not
+# candidates$run2006 <- sapply(lapply(elections.list,function(x) "2006" %in% x), function(x) sum(x))
+candidates$run2010 <- sapply(lapply(elections.list,function(x) "2010" %in% x), function(x) sum(x))
+candidates$run2014 <- sapply(lapply(elections.list,function(x) "2014" %in% x), function(x) sum(x))
+
+# Filter only candidate who ran in 2010 or 2014
+candidates.filtered <- candidates %>%
+  filter(run2010 + run2014 > 0)
+```
+
+```{r export inital file, eval = F}
+# Export to .csv so I can add DOB
+cols <- c("name", "office", "party", "election_districts", 
+          "election_years", "cycles", "candidate_status", "candidate_id") # cols to export
+write.csv(candidates.filtered %>% select(cols), "nys_candidates.csv")
+```
+
+I wanted to narrow down the dataset to only candidates that ran for open seats
+so I would not have to control for incumbency advanatages. 
+```{r, eval=FALSE}
+# Make a new dataframe for those candidates who ran for open seats
+candidates.no.incumbent <- candidates.filtered %>%
+  filter(incumbent_challenge == "O")
+# That's only 35 races
+# It might make the project easier to look at only a few elections and have those
+# elections be a simple case (ie won't have to control for incumbency factors)
+# How many elections were actually in this filtered set?
+length(unique(candidates.no.incumbent$district))
+```
+This was too small of a subsample. The effects I'm interested in should be apparent in the full dataset anyway. 
+
+##### What I need to do for candidates:
+
+- Get candidates' age at time of election
+
+- Filter to only candidates who ran in the general election
+
+- Consider filtering out third party candidates
+
+###### What I need to do for voters:
+
+- Find out how many voters by age group voted in each midterm election
+
+- Validate counts against aggregated totals in Census files (look at the Pomante paper)
+
+- Get VEP by Congressional district and use that to get turnout rates
