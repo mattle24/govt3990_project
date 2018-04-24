@@ -22,10 +22,6 @@ Set up Python packages
 Sys.setenv(PATH = paste("/home/matt/anaconda3/bin", Sys.getenv("PATH"), sep=":"))
 ```
 
-```{python py pkgs}
-```
-
-
 In Python, add columns for Young and Voted in 2010 and 2014 since text is easier to handle in Python.
 
 ```{python py manipulation}
@@ -99,4 +95,14 @@ For real, sticking to R for the rest of the analysis.
 ```{r}
 df <- read_feather(path)
 ```
+
+### What I'm going to do:
+- Get Census data. 
+  - I need to get VAP for 18-24 (preferably VEP) by congressional district in 2010 and 2014 (different districts)
+  - 2014 population from the 2015 ACS?
+  - I can get demographic data for city, county, or CD if I do microanalysis
+- Code candidate gender
+- Decide what predictors to use
+- Aggregate voter turnout by CD. Then, get turnout rates and match them to elections. 
+
 
