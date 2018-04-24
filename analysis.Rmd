@@ -1,0 +1,102 @@
+
+Load packages
+```{r pkgs, messages = F}
+library(dplyr)
+library(DBI)
+library(RSQLite)
+library(feather)
+```
+
+Connect to the database and read in the table
+```{r DB conn}
+con <- dbConnect(RSQLite::SQLite(), dbname = "../data/govt990.db") # connect to DB
+# Send the table to feather so I can access it in Python and R
+path <- "my_data.feather"
+write_feather( dbGetQuery(con, 'SELECT * FROM nys_young_voters;'), path )
+
+dbDisconnect(con) # disconnect from DB
+```
+
+Set up Python packages
+```{r environment setup}
+Sys.setenv(PATH = paste("/home/matt/anaconda3/bin", Sys.getenv("PATH"), sep=":"))
+```
+
+```{python py pkgs}
+```
+
+
+In Python, add columns for Young and Voted in 2010 and 2014 since text is easier to handle in Python.
+
+```{python py manipulation}
+import pandas as pd
+import feather
+
+def age_at_election(dob, election_date):
+    '''Given an election date and a date of birth, return the person's age 
+    in years on election day. Return years as floor of years - ie, if someone is 70 years old
+    and 360 days, return 70. '''
+    try:
+        return relativedelta(pd.to_datetime(election_date), pd.to_datetime(dob, format="%Y%m%d")).years
+    except:
+        return float('nan')
+
+def young_at_election(series, election_date):
+    '''Given an election date and a date of birth pandas Series, return 
+    a Series whether or not someone was 24 or under on election day.
+    Return years as floor of years - ie, if someone is 70 years old
+    and 360 days, return 70. '''
+    return pd.to_datetime(series, format = "%Y%m%d", errors = "coerce") + pd.DateOffset(years=24) >= election_date
+
+def find_election(array, year, e_type):
+    if array is None:
+        return None
+    
+    if e_type.lower() == "general":
+        e_type = "GE"
+    elif e_type.lower() == "primary":
+        e_type = "PR"
+    else:
+        return None
+    
+    year = str(year)
+    
+    # Some elections might use YY instead of YYYY
+    # TODO: unsolved
+    # New bug: some elections recorded as %m%d%Y
+    # So I would also return true for something like '061416' -> June, 14 2016 election
+    # But that wouldn't have "GE" in it usually
+    # An exception would be something like "GENEVA election 2016"
+    # But that's being captured errorenously anyway --> TODO!
+    # For now, I'm going to do that
+    # This is a quick and cheap data check anyway
+    
+    for election in array:
+        if year in election and e_type in election:
+            return True
+    return False
+   
+# Functions defined, now let's do some work
+elections = ["11/4/14", "11/2/10"] # midterm dates
+
+path = "my_data.feather"
+df = feather.read_dataframe(path)
+df["Young2010"] = young_at_election(df["DOB"], election_date = elections[1])
+df["Voted2010"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2010, e_type = "General")
+
+
+df["Young2014"] = young_at_election(df["DOB"], election_date = elections[0])
+df["Voted2014"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2014, e_type = "General")
+ 
+# Now back to feather for R
+feather.write_dataframe(df, path)
+```
+
+Look at Python. Now back to R. Python. R. 
+
+For real, sticking to R for the rest of the analysis.
+
+```{r}
+df <- read_feather(path)
+```
+
