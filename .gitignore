@@ -1,0 +1,7 @@
+census_data/
+
+.Rhistory
+
+my_data.feather
+
+__pycache__/

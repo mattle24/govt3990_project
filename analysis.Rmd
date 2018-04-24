@@ -1,12 +1,18 @@
 
+## Setup and Data Manipulation
+
+### Setup
 Load packages
-```{r pkgs, messages = F}
+```{r pkgs, messages = FALSE}
 library(dplyr)
 library(DBI)
 library(RSQLite)
 library(feather)
 ```
 
+### Obtain Data
+
+#### Voter File Data
 Connect to the database and read in the table
 ```{r DB conn}
 con <- dbConnect(RSQLite::SQLite(), dbname = "../data/govt990.db") # connect to DB
@@ -15,6 +21,7 @@ path <- "my_data.feather"
 write_feather( dbGetQuery(con, 'SELECT * FROM nys_young_voters;'), path )
 
 dbDisconnect(con) # disconnect from DB
+warning("I should really just do all of this in the Python block")
 ```
 
 Set up Python packages
@@ -92,8 +99,83 @@ Look at Python. Now back to R. Python. R.
 
 For real, sticking to R for the rest of the analysis.
 
-```{r}
+```{r data to R}
+# Get data in R dataframe
 df <- read_feather(path)
+```
+
+#### Census Data
+Get data from the 2010 and 2014 Census. I got the files from https://www.nhgis.org/. I downloaded files with
+descriptive headers, so I will skip reading the first row.
+```{r read census data}
+warning("Need to get data for 2010 CD populations")
+census.cd.14 <- read.csv("census_data/nhgis0036_ds215_20155_2015_cd113th-114th.csv", skip = 1)
+```
+
+I need to manipulate the Census data in a few ways. First, I only need to data from New York. 
+Also, the Census supplied age data by sex. I am going to manipulate the dataframe to have the total
+number of people aged 18 -- 24 living in each Congressional District.
+```{r manipulate census data}
+# Only need New York data
+young_pop14 <- census.cd.14 %>%
+  filter(State.Name == "New York") %>%
+  group_by(Congressional.District..2013.2017..113th.114th.Congress..Code) %>%
+  summarise(young_population = 
+              sum(Estimates..Male..18.and.19.years,
+                  Estimates..Male..20.years,
+                  Estimates..Male..21.years,
+                  Estimates..Male..22.to.24.years,
+                  Estimates..Female..18.and.19.years,
+                  Estimates..Female..20.years,
+                  Estimates..Female..21.years,
+                  Estimates..Female..22.to.24.years))
+names(young_pop14)[1] <- "CD"
+```
+
+
+#### Turnout Rates
+
+Get voter turnout rates. First, just for 2014 
+
+```{r Turnout rates}
+# get voters who were young and voted in 2014, 
+# then filter out duplicate voter IDs
+
+# It is sorted to filter out older registration records.
+# TODO: a better way to do this would be to filter out duplicated
+# records with the constaint that the final record has to be before the election
+vote14 <- df %>%
+  filter(Young2014 & Voted2014) %>%
+  arrange(desc(Reg_Date))
+
+# dup <- vote14[duplicated(vote14$StateID), ] %>% 
+#   select(Reg_Date, StateID) %>%
+#   arrange(desc(Reg_Date), StateID)
+
+full <- nrow(vote14)
+vote14 <- vote14[!duplicated(vote14$StateID), ]
+warning( paste("Elimiated", full - nrow(vote14), "rows through de-duplication", sep = " ") )
+# Aggregate voter turnout by Congressional District
+turnout14 <- vote14 %>%
+  group_by(CD) %>% 
+  summarise(turnout = sum(Voted2014))
+
+# Match to Census population by Congressional district to get rate
+turnout14 <- turnout14 %>% 
+  left_join(young_pop14) %>%
+  mutate(turnout_rate = turnout / young_population)
+
+# hist(turnout14$turnout_rate) # That looks really low
+summary(turnout14$turnout_rate) # There are some *very* low values, and max turnout is ~ 8%
+sd(turnout14$turnout_rate)
+```
+The turnout rates look very low, but for now I will continue with the analysis. I do want to check if there
+were districts that seem to have articificially lower turnout rates. I will consider removing those 
+districts from the analysis until I have better data.
+
+```{r map turnout, eval = FALSE}
+# Map turnout to see if anything looks "weird"
+# I can't install leaflet, so this will have to wait. 
 ```
 
 ### What I'm going to do:
