@@ -8,6 +8,7 @@ library(dplyr)
 library(DBI)
 library(RSQLite)
 library(feather)
+library(lubridate) 
 ```
 
 ### Obtain Data
@@ -15,13 +16,16 @@ library(feather)
 #### Voter File Data
 Connect to the database and read in the table
 ```{r DB conn}
-con <- dbConnect(RSQLite::SQLite(), dbname = "../data/govt990.db") # connect to DB
-# Send the table to feather so I can access it in Python and R
 path <- "my_data.feather"
-write_feather( dbGetQuery(con, 'SELECT * FROM nys_young_voters;'), path )
 
-dbDisconnect(con) # disconnect from DB
-warning("I should really just do all of this in the Python block")
+if (!file.exists(path)) {
+  con <- dbConnect(RSQLite::SQLite(), dbname = "../data/govt990.db") # connect to DB
+  # Send the table to feather so I can access it in Python and R
+  write_feather( dbGetQuery(con, 'SELECT * FROM nys_young_voters;'), path )
+  
+  dbDisconnect(con) # disconnect from DB
+  warning("I should really just do all of this in the Python block")
+}
 ```
 
 Set up Python packages
@@ -178,10 +182,73 @@ districts from the analysis until I have better data.
 # I can't install leaflet, so this will have to wait. 
 ```
 
+#### Candidate Data
+```{r read candidate data}
+candidates <- read.csv("candidate_data/nys_candidates_ages.csv")
+
+# Since this is 2014, assume the last district
+candidates$election_districts <-gsub("\\{|\\}", "",candidates$election_districts)
+
+#' Return the last element in a list
+#'
+#' This function will be used to return the last
+#' district that a candidate ran in, which
+#' should be the district they ran in during 2014.  
+get_last <- function(array) {
+  return( as.integer( array[length(array)] ) )
+}
+
+election.districts <- strsplit(candidates$election_districts, ",")
+candidates$district <- sapply(election.districts, function(x) get_last(x))
+
+# Filter only candidates who ran in 2014 and did not run unopposed. 
+candidates.14 <- candidates %>%
+  filter(gen14 == 1)
+
+# Get candidate age for 2014 midterm
+candidates.14$age <- as.period(interval(as.Date(candidates.14$dob, format = "%m/%d/%Y"), "2014-11-14"), units = "year")$year
+
+# For each district, get the youngest age and the average age
+districts.14 <- candidates.14 %>% 
+  group_by(district) %>%  
+  summarise(youngest_age = max(age, na.rm = T),
+            average_age = mean(age, na.rm = T))
+
+warning("\nNo age data for district 4, filtering out.")
+districts.14 <- districts.14 %>% 
+  filter(district != 4)
+```
+
+#### Master Dataframe
+
+Create one dataframe to link all of the district-level data together
+
+```{r}
+master <- turnout14 %>% 
+  inner_join(districts.14, by = c("CD" = "district")) 
+```
+
+
+## Analysis
+
+### Logistic Regression
+
+I am going to start with a logistic regression model predicting percentage of young people who vote in a district. 
+```{r}
+logit <- glm(data = master, cbind(turnout, young_population - turnout) ~ youngest_age, family = "binomial")
+summary(logit)
+```
+
+
+```{r}
+logit2 <- glm(data = master, cbind(turnout, young_population - turnout) ~ average_age, family = "binomial")
+summary(logit2)
+```
+
 ### What I'm going to do:
 - Get Census data. 
-  - I need to get VAP for 18-24 (preferably VEP) by congressional district in 2010 and 2014 (different districts)
-  - 2014 population from the 2015 ACS?
+  - I need to get VAP for 18-24 (preferably VEP) by congressional district in 2010 and 2014 (different districts) 
+  - 2014 population from the 2015 ACS? [X]
   - I can get demographic data for city, county, or CD if I do microanalysis
 - Code candidate gender
 - Decide what predictors to use
