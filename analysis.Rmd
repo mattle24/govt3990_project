@@ -5,10 +5,9 @@
 Load packages
 ```{r pkgs, messages = FALSE}
 library(dplyr)
-library(DBI)
-library(RSQLite)
 library(feather)
 library(lubridate) 
+library(ggplot2); fig.num <- 0 # init figure number tracker
 ```
 
 ### Obtain Data
@@ -19,6 +18,8 @@ Connect to the database and read in the table
 path <- "my_data.feather"
 
 if (!file.exists(path)) {
+  library(DBI)
+  library(RSQLite)
   con <- dbConnect(RSQLite::SQLite(), dbname = "../data/govt990.db") # connect to DB
   # Send the table to feather so I can access it in Python and R
   write_feather( dbGetQuery(con, 'SELECT * FROM nys_young_voters;'), path )
@@ -84,19 +85,22 @@ def find_election(array, year, e_type):
     return False
    
 # Functions defined, now let's do some work
-elections = ["11/4/14", "11/2/10"] # midterm dates
 
-path = "my_data.feather"
-df = feather.read_dataframe(path)
-df["Young2010"] = young_at_election(df["DOB"], election_date = elections[1])
-df["Voted2010"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2010, e_type = "General")
-
-
-df["Young2014"] = young_at_election(df["DOB"], election_date = elections[0])
-df["Voted2014"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2014, e_type = "General")
- 
-# Now back to feather for R
-feather.write_dataframe(df, path)
+evalu = False # don't evaluate because the feather already exists
+if evalu:
+  elections = ["11/4/14", "11/2/10"] # midterm dates
+  
+  path = "my_data.feather"
+  df = feather.read_dataframe(path)
+  df["Young2010"] = young_at_election(df["DOB"], election_date = elections[1])
+  df["Voted2010"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2010, e_type = "General")
+  
+  
+  df["Young2014"] = young_at_election(df["DOB"], election_date = elections[0])
+  df["Voted2014"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2014, e_type = "General")
+   
+  # Now back to feather for R
+  feather.write_dataframe(df, path)
 ```
 
 Look at Python. Now back to R. Python. R. 
@@ -112,7 +116,7 @@ df <- read_feather(path)
 Get data from the 2010 and 2014 Census. I got the files from https://www.nhgis.org/. I downloaded files with
 descriptive headers, so I will skip reading the first row.
 ```{r read census data}
-warning("Need to get data for 2010 CD populations")
+census.cd.10 <- read.csv("census_data/nhgis0037_ds172_2010_cd110th-112th.csv", skip = 1)
 census.cd.14 <- read.csv("census_data/nhgis0036_ds215_20155_2015_cd113th-114th.csv", skip = 1)
 ```
 
@@ -120,7 +124,20 @@ I need to manipulate the Census data in a few ways. First, I only need to data f
 Also, the Census supplied age data by sex. I am going to manipulate the dataframe to have the total
 number of people aged 18 -- 24 living in each Congressional District.
 ```{r manipulate census data}
-# Only need New York data
+young_pop10 <- census.cd.10 %>%
+  filter(State.Name == "New York") %>%
+  group_by(Congressional.District..111th.Congress..Code) %>%
+  summarise(young_population = 
+              sum(Male..18.and.19.years,
+                  Male..20.years,
+                  Male..21.years,
+                  Male..22.to.24.years,
+                  Female..18.and.19.years,
+                  Female..20.years,
+                  Female..21.years,
+                  Female..22.to.24.years))
+names(young_pop10)[1] <- "CD"
+
 young_pop14 <- census.cd.14 %>%
   filter(State.Name == "New York") %>%
   group_by(Congressional.District..2013.2017..113th.114th.Congress..Code) %>%
@@ -158,7 +175,7 @@ vote14 <- df %>%
 
 full <- nrow(vote14)
 vote14 <- vote14[!duplicated(vote14$StateID), ]
-warning( paste("Elimiated", full - nrow(vote14), "rows through de-duplication", sep = " ") )
+warning( paste("Elimiated", full - nrow(vote14), "rows through de-duplication for 2014 data", sep = " ") )
 # Aggregate voter turnout by Congressional District
 turnout14 <- vote14 %>%
   group_by(CD) %>% 
@@ -172,6 +189,32 @@ turnout14 <- turnout14 %>%
 # hist(turnout14$turnout_rate) # That looks really low
 summary(turnout14$turnout_rate) # There are some *very* low values, and max turnout is ~ 8%
 sd(turnout14$turnout_rate)
+
+# Now do this for 2010 (did 2014 first because data are better)
+vote10 <- df %>% 
+  filter(Young2010 & Voted2010) %>% 
+  arrange(desc(Reg_Date))
+full <- nrow(vote10)
+vote10 <- vote10[!duplicated(vote10$StateID), ]
+warning( paste("Elimiated", full - nrow(vote10), "rows through de-duplication for 2010 data", sep = " ") )
+
+# Aggregate voter turnout by Congressional District
+# Match to Census population by Congressional district to get rate
+turnout10 <- vote10 %>%
+  group_by(CD) %>% 
+  summarise(turnout = sum(Voted2010)) %>% 
+  left_join(young_pop10) %>% 
+  mutate(turnout_rate = turnout / young_population)
+
+
+# hist(turnout10$turnout_rate) # That looks really low but a bit better
+summary(turnout10$turnout_rate) # There are some *very* low values, and max turnout is ~ 15%
+sd(turnout10$turnout_rate)
+
+turnout10$year <- 2010
+turnout14$year <- 2014
+
+turnout <- rbind(turnout10, turnout14)
 ```
 The turnout rates look very low, but for now I will continue with the analysis. I do want to check if there
 were districts that seem to have articificially lower turnout rates. I will consider removing those 
@@ -186,7 +229,6 @@ districts from the analysis until I have better data.
 ```{r read candidate data}
 candidates <- read.csv("candidate_data/nys_candidates_ages.csv")
 
-# Since this is 2014, assume the last district
 candidates$election_districts <-gsub("\\{|\\}", "",candidates$election_districts)
 
 #' Return the last element in a list
@@ -195,63 +237,192 @@ candidates$election_districts <-gsub("\\{|\\}", "",candidates$election_districts
 #' district that a candidate ran in, which
 #' should be the district they ran in during 2014.  
 get_last <- function(array) {
+  # Array is a list
   return( as.integer( array[length(array)] ) )
 }
 
-election.districts <- strsplit(candidates$election_districts, ",")
-candidates$district <- sapply(election.districts, function(x) get_last(x))
+# For 2010, assume the second to last district (if more than one) --> district at last census usually, if there was a change
+get_secondlast <- function(array) {
+  # Array is a list
+  filtered <- unique(array)
+  if (length(filtered == 1)) {
+    return( as.integer(filtered[1]) )
+  }
+  else {
+    return( as.integer(array[length(filtered) - 1]) )
+  }
+}
 
-# Filter only candidates who ran in 2014 and did not run unopposed. 
+
+# Filter only candidates who ran in 2014 and did not run unopposed 
 candidates.14 <- candidates %>%
   filter(gen14 == 1)
 
+# For 2014, assume the last district
+election.districts <- strsplit(candidates.14$election_districts, ",")
+candidates.14$district <- sapply(election.districts, function(x) get_last(x))
+
 # Get candidate age for 2014 midterm
-candidates.14$age <- as.period(interval(as.Date(candidates.14$dob, format = "%m/%d/%Y"), "2014-11-14"), units = "year")$year
+candidates.14$age <- as.period(interval(as.Date(candidates.14$dob, format = "%m/%d/%Y"), "2014-11-4"), units = "year")$year
 
 # For each district, get the youngest age and the average age
 districts.14 <- candidates.14 %>% 
   group_by(district) %>%  
-  summarise(youngest_age = max(age, na.rm = T),
+  summarise(youngest_age = min(age, na.rm = T),
             average_age = mean(age, na.rm = T))
 
-warning("\nNo age data for district 4, filtering out.")
+warning("\nNo age data for district 4 in 2014, filtering out.")
 districts.14 <- districts.14 %>% 
   filter(district != 4)
+
+# Do the same thing for 2010
+# Filter only candidates who ran in 2010 and did not run unopposed 
+candidates.10 <- candidates %>%
+  filter(gen10 == 1)
+
+# For 2010, assume the second to last district (if more than one) --> district at last census usually, if there was a change
+election.districts <- strsplit(candidates.10$election_districts, ",")
+candidates.10$district <- sapply(election.districts, function(x) get_secondlast(x))
+# Get candidate age for 2014 midterm
+candidates.10$age <- as.period(interval(as.Date(candidates.10$dob, format = "%m/%d/%Y"), "2010-11-2"), units = "year")$year
+
+# For each district, get the youngest age and the average age
+districts.10 <- candidates.10 %>% 
+  group_by(district) %>%  
+  summarise(youngest_age = min(age, na.rm = T),
+            average_age = mean(age, na.rm = T))
+
+warning("\nNo age data for districts 6, 8, and 27 for 2010, filtering out.")
+districts.10 <- districts.10 %>% 
+  filter(!(district %in% c(6, 8, 27)))
 ```
 
 #### Master Dataframe
 
 Create one dataframe to link all of the district-level data together
 
-```{r}
-master <- turnout14 %>% 
+```{r join all data}
+all14 <- turnout14 %>% 
   inner_join(districts.14, by = c("CD" = "district")) 
+
+all10 <- turnout10 %>% 
+  inner_join(districts.10, by = c("CD" = "district"))
+
+master <- rbind(all10, all14) %>% arrange(CD, year)
+```
+
+```{r make age and year categorical}
+master$age_cat <- "older" # init as older
+master$age_cat[master$youngest_age <= 30] <- "young" 
+master$age_cat <- factor(master$age_cat, levels = c("older", "young"))
+master$year <- factor(master$year, levels = c(2010, 2014))
+master$CD <- as.factor(master$CD)
 ```
 
 
 ## Analysis
 
+### Two-Way Comparison
+```{r two-ways plots}
+# Plot turnout by age, split plots by year, and color by age category
+# First, do continous. 
+my_pal <- c("#FF6347" ,"#104E8B") # define my color palette
+
+fig.num <- fig.num + 1
+compare_plot <- ggplot(master) + geom_point(aes(x = youngest_age, y = turnout_rate, col = age_cat), size = 2) +
+  facet_grid(. ~ year) +
+  labs(title = "Youth Voting", x = "Youngest Candidate's Age", y = "Turnout Rate",
+       caption = paste("Figure ", fig.num, ": Predictions of youth voter turnout using the mixed logistic model.", sep = "")) +
+  scale_color_manual(values = my_pal, name = "Youngest \nCandidate",labels = c("Older", "Young"), guide = guide_legend(reverse=TRUE)) +
+  theme_bw()
+compare_plot
+```
+```{r two way tables}
+master %>% 
+  group_by(age_cat, year) %>% 
+  summarise(avg = mean(turnout_rate), count = n()) %>% 
+  arrange(year) %>% 
+  xtable::xtable()
+```
+
+
+The continous graph shows turnout seems to increase with higher age in 2010 and decrease with higher age in 2014. 
+
+The binned graph shows that younger candidates were associcated with the higher turnout rates in 2014. It's also important
+to note there were only two youngest candidates 35 and under in 2010 and five in 2014.  
+
+I am not trying to prove the the older a candidate gets, the lower the youth turnout rate. My hypothesis is that 
+younger candidates (on a absolute scale) raise turnout relative to other candidates. Therefore, the categorical age
+variable is the correct measure. 
+
 ### Logistic Regression
 
 I am going to start with a logistic regression model predicting percentage of young people who vote in a district. 
 ```{r}
-logit <- glm(data = master, cbind(turnout, young_population - turnout) ~ youngest_age, family = "binomial")
+logit <- glm(data = master, cbind(turnout, young_population - turnout) ~ year + age_cat , family = "binomial")
 summary(logit)
+
+# Random effect for year
+library(lme4)
+logit.mixed <- glmer(data = master, cbind(turnout, young_population - turnout) ~ (1 | year) + age_cat, family = "binomial")
+summary(logit.mixed)
+
+# Random effect for Congressional District -- makes no sense since CD boundaries change
+# Random effect for some geographic boundary might be a good idea
+# logit.mixed2 <- glmer(data = master, cbind(turnout, young_population - turnout) ~ (1 | year) + (1 | CD) + age_cat, family = "binomial")
+# summary(logit.mixed2)
 ```
 
-
+### Visualize Model
 ```{r}
-logit2 <- glm(data = master, cbind(turnout, young_population - turnout) ~ average_age, family = "binomial")
-summary(logit2)
+ages <- as.factor(c("young","older"))
+years <- as.factor(c(2010, 2014))
+X <- expand.grid(data.frame(age_cat = ages, year = years))
+preds <- predict(logit.mixed, newdata = X)
+everything <- cbind(X, preds)
+
+# Make 95% CI
+se <- 0.008223
+everything <- everything %>% 
+  mutate(lower = preds - se * qnorm(.975),
+         upper = preds + se * qnorm(.975)) %>% 
+  # Now change log odds to probabilities
+  mutate(lower = exp(lower) / (1 + exp(lower)),
+         preds = exp(preds) / (1 + exp(preds)),
+         upper = exp(upper) / (1 + exp(upper)))
+ 
+fig.num <- fig.num + 1 
+pred_plot <- ggplot(everything) + 
+  geom_pointrange(aes(x = as.factor(year), y = preds, ymin = lower, ymax = upper, col = age_cat)) +
+  labs(title = "Model Predictions (95% Interval)", x = "Youngest Candidate's Age", y = "Turnout Rate",
+        caption = paste("Figure ", fig.num, ": Predictions of youth voter turnout using the mixed logistic model.", sep = "")) +
+  scale_color_manual(values = my_pal, name = "Youngest \nCandidate",labels = c("Older", "Young"), guide = guide_legend(reverse=TRUE)) +
+  theme_bw()
+pred_plot
 ```
 
-### What I'm going to do:
-- Get Census data. 
-  - I need to get VAP for 18-24 (preferably VEP) by congressional district in 2010 and 2014 (different districts) 
-  - 2014 population from the 2015 ACS? [X]
-  - I can get demographic data for city, county, or CD if I do microanalysis
-- Code candidate gender
-- Decide what predictors to use
-- Aggregate voter turnout by CD. Then, get turnout rates and match them to elections. 
+### Non-Parametric
+```{r}
+stop("Do a non-parametric rank test")
+```
+
+
+### Make Presentation
+```{r, eval = F, echo = F}
+library(officer)
+library(magrittr) # `magrittr` supposedly makes officer usage easier
+
+pres <- read_pptx() # create blank ppt
+
+# Title Slide
+pres <- pres %>% 
+  add_slide(layout = "Title and Content", master = "Office Theme") %>% 
+  ph_with_text(type = "title", str = "Reexamining Youth Voter Turnout") %>%
+  ph_with_text(type = "body", str = "Do young candidates increase youth voter turnout?") %>%
+  ph_with_text(type = "dt", str = format(Sys.Date())) %>%
+  ph_with_text(type = "sldNum", str = "slide 1")
+
+print(pres, target = "presentation.pptx") 
+```
 
 
