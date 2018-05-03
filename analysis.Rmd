@@ -337,12 +337,12 @@ compare_plot <- ggplot(master) + geom_point(aes(x = youngest_age, y = turnout_ra
   theme_bw()
 compare_plot
 ```
+
 ```{r two way tables}
 master %>% 
   group_by(age_cat, year) %>% 
   summarise(avg = mean(turnout_rate), count = n()) %>% 
-  arrange(year) %>% 
-  xtable::xtable()
+  arrange(year) # %>% xtable::xtable()
 ```
 
 
@@ -412,17 +412,25 @@ stop("Do a non-parametric rank test")
 library(officer)
 library(magrittr) # `magrittr` supposedly makes officer usage easier
 
-pres <- read_pptx() # create blank ppt
-
-# Title Slide
-pres <- pres %>% 
+# Make slides with images
+slides <- read_pptx() %>% 
+  # Compare turnout by candidate age
   add_slide(layout = "Title and Content", master = "Office Theme") %>% 
-  ph_with_text(type = "title", str = "Reexamining Youth Voter Turnout") %>%
-  ph_with_text(type = "body", str = "Do young candidates increase youth voter turnout?") %>%
-  ph_with_text(type = "dt", str = format(Sys.Date())) %>%
-  ph_with_text(type = "sldNum", str = "slide 1")
+  ph_with_gg(compare_plot) %>% 
+  add_slide(layout = "Title and Content", master = "Office Theme") %>% 
+  ph_with_gg(pred_plot)
+print(slides, target = "images.pptx") 
+```
 
-print(pres, target = "presentation.pptx") 
+```{r}
+library(stargazer)
+stargazer(logit.mixed, out = "logit_mixed.html", type = "html",
+          title = "Mixed Logistic Regression",
+          covariate.labels = c("Young Candidate"),
+          dep.var.caption = "Youth Voter Turnout",
+          dep.var.labels.include = F,
+          ci = F, intercept.bottom = FALSE,
+           omit.stat = c("aic", "bic", "LL"))
 ```
 
 
