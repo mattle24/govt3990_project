@@ -426,7 +426,7 @@ print(slides, target = "images.pptx")
 library(stargazer)
 stargazer(logit.mixed, out = "logit_mixed.html", type = "html",
           title = "Mixed Logistic Regression",
-          covariate.labels = c("Young Candidate"),
+          covariate.labels = c("Intercept", "Young Candidate"),
           dep.var.caption = "Youth Voter Turnout",
           dep.var.labels.include = F,
           ci = F, intercept.bottom = FALSE,
