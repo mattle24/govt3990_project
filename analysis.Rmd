@@ -1,3 +1,13 @@
+---
+title: "Analyzing Youth Voter Turnout Through the Lens of Descriptive Representation"
+author: "Matt Lehman"
+date: "`r format(Sys.time(), '%b %d, %Y') `"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
 
 ## Setup and Data Manipulation
 
@@ -7,7 +17,8 @@ Load packages
 library(dplyr)
 library(feather)
 library(lubridate) 
-library(ggplot2); fig.num <- 0 # init figure number tracker
+library(ggplot2)
+library(stargazer)
 ```
 
 ### Obtain Data
@@ -28,82 +39,6 @@ if (!file.exists(path)) {
   warning("I should really just do all of this in the Python block")
 }
 ```
-
-Set up Python packages
-```{r environment setup}
-Sys.setenv(PATH = paste("/home/matt/anaconda3/bin", Sys.getenv("PATH"), sep=":"))
-```
-
-In Python, add columns for Young and Voted in 2010 and 2014 since text is easier to handle in Python.
-
-```{python py manipulation}
-import pandas as pd
-import feather
-
-def age_at_election(dob, election_date):
-    '''Given an election date and a date of birth, return the person's age 
-    in years on election day. Return years as floor of years - ie, if someone is 70 years old
-    and 360 days, return 70. '''
-    try:
-        return relativedelta(pd.to_datetime(election_date), pd.to_datetime(dob, format="%Y%m%d")).years
-    except:
-        return float('nan')
-
-def young_at_election(series, election_date):
-    '''Given an election date and a date of birth pandas Series, return 
-    a Series whether or not someone was 24 or under on election day.
-    Return years as floor of years - ie, if someone is 70 years old
-    and 360 days, return 70. '''
-    return pd.to_datetime(series, format = "%Y%m%d", errors = "coerce") + pd.DateOffset(years=24) >= election_date
-
-def find_election(array, year, e_type):
-    if array is None:
-        return None
-    
-    if e_type.lower() == "general":
-        e_type = "GE"
-    elif e_type.lower() == "primary":
-        e_type = "PR"
-    else:
-        return None
-    
-    year = str(year)
-    
-    # Some elections might use YY instead of YYYY
-    # TODO: unsolved
-    # New bug: some elections recorded as %m%d%Y
-    # So I would also return true for something like '061416' -> June, 14 2016 election
-    # But that wouldn't have "GE" in it usually
-    # An exception would be something like "GENEVA election 2016"
-    # But that's being captured errorenously anyway --> TODO!
-    # For now, I'm going to do that
-    # This is a quick and cheap data check anyway
-    
-    for election in array:
-        if year in election and e_type in election:
-            return True
-    return False
-   
-# Functions defined, now let's do some work
-
-evalu = False # don't evaluate because the feather already exists
-if evalu:
-  elections = ["11/4/14", "11/2/10"] # midterm dates
-  
-  path = "my_data.feather"
-  df = feather.read_dataframe(path)
-  df["Young2010"] = young_at_election(df["DOB"], election_date = elections[1])
-  df["Voted2010"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2010, e_type = "General")
-  
-  
-  df["Young2014"] = young_at_election(df["DOB"], election_date = elections[0])
-  df["Voted2014"] = df["Voter_Hx"].str.upper().str.split(";").apply(find_election, year = 2014, e_type = "General")
-   
-  # Now back to feather for R
-  feather.write_dataframe(df, path)
-```
-
-Look at Python. Now back to R. Python. R. 
 
 For real, sticking to R for the rest of the analysis.
 
@@ -229,7 +164,7 @@ districts from the analysis until I have better data.
 ```{r read candidate data}
 candidates <- read.csv("candidate_data/nys_candidates_ages.csv")
 
-candidates$election_districts <-gsub("\\{|\\}", "",candidates$election_districts)
+# candidates$election_districts <-gsub("\\{|\\}", "",candidates$election_districts)
 
 #' Return the last element in a list
 #'
@@ -253,14 +188,18 @@ get_secondlast <- function(array) {
   }
 }
 
+# Recode candidate status
+candidates <- candidates %>% 
+  mutate(sta10 = recode(sta10, C = 1, O = 2, I = 3, .default = 0),
+           sta14 = recode(sta14, C = 1, O = 2, I = 3, .default = 0))
 
 # Filter only candidates who ran in 2014 and did not run unopposed 
 candidates.14 <- candidates %>%
   filter(gen14 == 1)
 
 # For 2014, assume the last district
-election.districts <- strsplit(candidates.14$election_districts, ",")
-candidates.14$district <- sapply(election.districts, function(x) get_last(x))
+election.districts <- strsplit(as.character(candidates.14$election_districts), ",")
+candidates.14$district <- sapply(lapply(election.districts, function(x) get_last(x)), function(x) return(x[1]))
 
 # Get candidate age for 2014 midterm
 candidates.14$age <- as.period(interval(as.Date(candidates.14$dob, format = "%m/%d/%Y"), "2014-11-4"), units = "year")$year
@@ -269,11 +208,13 @@ candidates.14$age <- as.period(interval(as.Date(candidates.14$dob, format = "%m/
 districts.14 <- candidates.14 %>% 
   group_by(district) %>%  
   summarise(youngest_age = min(age, na.rm = T),
-            average_age = mean(age, na.rm = T))
+            average_age = mean(age, na.rm = T),
+            status = max(sta14))
 
 warning("\nNo age data for district 4 in 2014, filtering out.")
-districts.14 <- districts.14 %>% 
-  filter(district != 4)
+districts.14 <- districts.14 %>%
+  filter(district != 4) %>%
+  filter(!is.na(district))
 
 # Do the same thing for 2010
 # Filter only candidates who ran in 2010 and did not run unopposed 
@@ -281,8 +222,8 @@ candidates.10 <- candidates %>%
   filter(gen10 == 1)
 
 # For 2010, assume the second to last district (if more than one) --> district at last census usually, if there was a change
-election.districts <- strsplit(candidates.10$election_districts, ",")
-candidates.10$district <- sapply(election.districts, function(x) get_secondlast(x))
+election.districts <- strsplit(as.character(candidates.10$election_districts), ",")
+candidates.10$district <- sapply(sapply(election.districts, function(x) get_secondlast(x)), function(x) return(x[1]))
 # Get candidate age for 2014 midterm
 candidates.10$age <- as.period(interval(as.Date(candidates.10$dob, format = "%m/%d/%Y"), "2010-11-2"), units = "year")$year
 
@@ -290,11 +231,12 @@ candidates.10$age <- as.period(interval(as.Date(candidates.10$dob, format = "%m/
 districts.10 <- candidates.10 %>% 
   group_by(district) %>%  
   summarise(youngest_age = min(age, na.rm = T),
-            average_age = mean(age, na.rm = T))
+            average_age = mean(age, na.rm = T),
+            status = max(sta10))
 
-warning("\nNo age data for districts 6, 8, and 27 for 2010, filtering out.")
-districts.10 <- districts.10 %>% 
-  filter(!(district %in% c(6, 8, 27)))
+# Filter out NA
+districts.10 <- districts.10 %>%
+  filter(!is.na(district))
 ```
 
 #### Master Dataframe
@@ -317,25 +259,54 @@ master$age_cat[master$youngest_age <= 30] <- "young"
 master$age_cat <- factor(master$age_cat, levels = c("older", "young"))
 master$year <- factor(master$year, levels = c(2010, 2014))
 master$CD <- as.factor(master$CD)
+
+master <- master %>% 
+  mutate(inc_status = factor(case_when(status == 1 ~ "open",
+                                TRUE ~ "incumbent")))
 ```
 
 
 ## Analysis
+### One-Way Comparisons
+
+```{r one-way plots}
+fig.num <- 0
+my_pal <- c("#FF6347" ,"#104E8B") # define my color palette
+
+# Plot histogram of youth turnout
+fig.num <- fig.num + 1
+youth_turnout <- ggplot(master) + geom_histogram(aes(x = turnout_rate), bins = 8,
+                                                 fill = my_pal[2]) +
+  labs(title = "Youth Voter Turnout", x = "Turnout Rate", y = "Count", 
+       caption = paste("Figure ", fig.num, ": Histogram of youth voter turnout.", sep = ""))
+youth_turnout
+```
 
 ### Two-Way Comparison
 ```{r two-ways plots}
 # Plot turnout by age, split plots by year, and color by age category
 # First, do continous. 
-my_pal <- c("#FF6347" ,"#104E8B") # define my color palette
 
 fig.num <- fig.num + 1
-compare_plot <- ggplot(master) + geom_point(aes(x = youngest_age, y = turnout_rate, col = age_cat), size = 2) +
-  facet_grid(. ~ year) +
+compare_plot <- ggplot(master %>% filter(year == 2014)) + 
+  geom_point(aes(x = youngest_age, y = turnout_rate, col = age_cat), size = 2) +
   labs(title = "Youth Voting", x = "Youngest Candidate's Age", y = "Turnout Rate",
-       caption = paste("Figure ", fig.num, ": Predictions of youth voter turnout using the mixed logistic model.", sep = "")) +
+       caption = paste("Figure ", fig.num, ": Youth voter turnout by youngest candidate's age.", sep = "")) +
   scale_color_manual(values = my_pal, name = "Youngest \nCandidate",labels = c("Older", "Young"), guide = guide_legend(reverse=TRUE)) +
   theme_bw()
 compare_plot
+
+# fig.num <- fig.num + 1
+# inc_plot <- ggplot(master) + geom_point(aes(x = youngest_age, y = turnout_rate, col = inc_status), size = 2) +
+#   facet_grid(. ~ year) +
+#   labs(title = "Youth Voting", x = "Youngest Candidate's Age", y = "Turnout Rate",
+#        caption = paste("Figure ", fig.num, ": Youth voter turnout by youngest candidate's age and seat status.", sep = "")) +
+#   scale_color_manual(values = my_pal, name = "Candidate \nStatus",labels = c("Incumbent", "Open"), guide = guide_legend(reverse=TRUE)) +
+#   theme_bw()
+# inc_plot
+
+# It doesn't make sense to inculde an incumbency effect since only two seats a year
+# were open. 
 ```
 
 ```{r two way tables}
@@ -359,13 +330,13 @@ variable is the correct measure.
 
 I am going to start with a logistic regression model predicting percentage of young people who vote in a district. 
 ```{r}
-logit <- glm(data = master, cbind(turnout, young_population - turnout) ~ year + age_cat , family = "binomial")
+logit <- glm(data = master %>% filter(year == 2014), cbind(turnout, young_population - turnout) ~  inc_status + age_cat , family = "binomial")
 summary(logit)
 
 # Random effect for year
-library(lme4)
-logit.mixed <- glmer(data = master, cbind(turnout, young_population - turnout) ~ (1 | year) + age_cat, family = "binomial")
-summary(logit.mixed)
+# library(lme4)
+# logit.mixed <- glmer(data = master, cbind(turnout, young_population - turnout) ~ (1 | year) + inc_status + age_cat, family = "binomial")
+# summary(logit.mixed)
 
 # Random effect for Congressional District -- makes no sense since CD boundaries change
 # Random effect for some geographic boundary might be a good idea
@@ -376,39 +347,36 @@ summary(logit.mixed)
 ### Visualize Model
 ```{r}
 ages <- as.factor(c("young","older"))
-years <- as.factor(c(2010, 2014))
-X <- expand.grid(data.frame(age_cat = ages, year = years))
-preds <- predict(logit.mixed, newdata = X)
-everything <- cbind(X, preds)
-
+stati <- as.factor(c("incumbent", "open"))
+X <- expand.grid(data.frame(age_cat = ages, inc_status = stati))
+preds <- predict.glm(logit, newdata = X,  type = "link", se.fit = T)
+everything <- cbind(X, preds$fit, preds$se.fit)
+names(everything) <- c("age_cat", "inc_status", "fit", "se")
 # Make 95% CI
-se <- 0.008223
 everything <- everything %>% 
-  mutate(lower = preds - se * qnorm(.975),
-         upper = preds + se * qnorm(.975)) %>% 
+  mutate(lower = fit -  se * qnorm(.975),
+         upper = fit + se * qnorm(.975)) %>% 
   # Now change log odds to probabilities
   mutate(lower = exp(lower) / (1 + exp(lower)),
-         preds = exp(preds) / (1 + exp(preds)),
+         fit = exp(fit) / (1 + exp(fit)),
          upper = exp(upper) / (1 + exp(upper)))
  
 fig.num <- fig.num + 1 
-pred_plot <- ggplot(everything) + 
-  geom_pointrange(aes(x = as.factor(year), y = preds, ymin = lower, ymax = upper, col = age_cat)) +
-  labs(title = "Model Predictions (95% Interval)", x = "Youngest Candidate's Age", y = "Turnout Rate",
-        caption = paste("Figure ", fig.num, ": Predictions of youth voter turnout using the mixed logistic model.", sep = "")) +
+pred_plot <- ggplot(everything, aes(x = as.factor(inc_status))) + 
+  geom_linerange(aes(ymin = lower, ymax = upper, col = age_cat), size =1.21, position = position_dodge(.2)) +
+  geom_point(aes(y = fit, col = age_cat), 
+                  position = position_dodge(.2), size = 4) +
+  labs(title = "Model Predictions (95% Interval)", x = "Seat Status", y = "Turnout Rate",
+        caption = paste("Figure ", fig.num, ": Predictions of youth voter turnout using the logistic model.", sep = "")) +
   scale_color_manual(values = my_pal, name = "Youngest \nCandidate",labels = c("Older", "Young"), guide = guide_legend(reverse=TRUE)) +
+  scale_x_discrete(labels = c("Incumbent", "Open")) +
   theme_bw()
 pred_plot
 ```
 
-### Non-Parametric
-```{r}
-stop("Do a non-parametric rank test")
-```
 
-
-### Make Presentation
-```{r, eval = F, echo = F}
+#### Make Presentation
+```{r powerpoint, eval = F}
 library(officer)
 library(magrittr) # `magrittr` supposedly makes officer usage easier
 
@@ -416,21 +384,44 @@ library(magrittr) # `magrittr` supposedly makes officer usage easier
 slides <- read_pptx() %>% 
   # Compare turnout by candidate age
   add_slide(layout = "Title and Content", master = "Office Theme") %>% 
+  ph_with_gg(youth_turnout) %>% 
+  add_slide(layout = "Title and Content", master = "Office Theme") %>% 
   ph_with_gg(compare_plot) %>% 
   add_slide(layout = "Title and Content", master = "Office Theme") %>% 
   ph_with_gg(pred_plot)
 print(slides, target = "images.pptx") 
 ```
 
-```{r}
-library(stargazer)
-stargazer(logit.mixed, out = "logit_mixed.html", type = "html",
-          title = "Mixed Logistic Regression",
-          covariate.labels = c("Intercept", "Young Candidate"),
-          dep.var.caption = "Youth Voter Turnout",
+#### Output Table
+```{r, eval = F}
+stargazer(logit, out = "logit.html", type = "html",
+          title = "Logistic Regression",
+          covariate.labels = c("Intercept", "Open Seat", "Young Candidate"),
+          dep.var.caption = "Youth Voter Turnout Rate",
           dep.var.labels.include = F,
-          ci = F, intercept.bottom = FALSE,
+          ci = T, intercept.bottom = FALSE,
            omit.stat = c("aic", "bic", "LL"))
 ```
+### Nominial Age Categories
+Run the analysis again, but this time break age into three different
+categories.
+```{r three age categories}
+master <- master %>% 
+  mutate(age_cat3 = case_when(
+    youngest_age <= 30 ~ "Young",
+    youngest_age <= 50 ~ "Mid-Aged",
+    youngest_age <= 100 ~ "Old"
+  ))
+logit.3 <- glm(data = master %>% filter(year == 2014), cbind(turnout, young_population - turnout) ~  inc_status + age_cat3, family = "binomial")
 
+summary(logit.3)
+# stargazer(logit.3, out = "logit_3.html", type = "html",
+#           title = "Logistic Regression with Three Levels",
+#           covariate.labels = c("Intercept", "Open Seat", "Young Candidate", "Old Candidate"),
+#           dep.var.caption = "Youth Voter Turnout Rate",
+#           dep.var.labels.include = F,
+#           ci = T, intercept.bottom = FALSE,
+#            omit.stat = c("aic", "bic", "LL"))
+
+```
 
